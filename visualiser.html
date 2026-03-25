@@ -1,0 +1,479 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>RAVE.EXE — Visualiser</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Bebas+Neue&family=Space+Mono:wght@400;700&family=Syne:wght@400;700;800&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="style.css">
+<style>
+  html, body { height: 100%; overflow: hidden; }
+</style>
+</head>
+<body class="viz-page" style="cursor:default;">
+
+<!-- TOP NAV BAR -->
+<nav class="viz-nav">
+  <a href="index.html" class="viz-logo">RAVE<span>.EXE</span></a>
+
+  <div class="viz-center">
+    <div id="status-dot" class="status-dot"></div>
+    <div class="bpm-box">
+      <div class="bpm-num" id="bpm">---</div>
+      <div class="bpm-label">BPM</div>
+    </div>
+  </div>
+
+  <div class="viz-right">
+    <a href="index.html" class="viz-back">← HOME</a>
+    <button class="viz-fullscreen" id="fs-btn">⛶ FULLSCREEN</button>
+  </div>
+</nav>
+
+<!-- CANVAS -->
+<div class="viz-canvas-wrap" id="canvas-wrap">
+  <canvas id="c"></canvas>
+
+  <div class="drop-overlay" id="drop-overlay">
+    <div class="pulse-ring"></div>
+    <div class="drop-title">DROP THE TRACK</div>
+    <div class="drop-sub">Upload audio or hit mic · Demo mode running</div>
+  </div>
+</div>
+
+<!-- CONTROLS -->
+<div class="viz-controls">
+
+  <div class="ctrl-group" style="min-width:180px;">
+    <div class="ctrl-label">Input Source</div>
+    <div class="ctrl-row">
+      <label class="vbtn upload-btn" style="cursor:pointer;">
+        ↑ Upload
+        <input type="file" id="file-input" accept="audio/*" style="display:none">
+      </label>
+      <button class="vbtn" id="mic-btn">● Mic</button>
+    </div>
+  </div>
+
+  <div class="ctrl-group" style="min-width:300px;">
+    <div class="ctrl-label">Scene</div>
+    <div class="ctrl-row">
+      <button class="vbtn active" data-scene="0">Plasma</button>
+      <button class="vbtn" data-scene="1">Lasers</button>
+      <button class="vbtn" data-scene="2">Tunnel</button>
+      <button class="vbtn" data-scene="3">Particles</button>
+      <button class="vbtn" data-scene="4">Bars</button>
+    </div>
+  </div>
+
+  <div class="ctrl-group" style="min-width:200px;">
+    <div class="ctrl-label">Palette</div>
+    <div class="ctrl-row">
+      <button class="vbtn active" data-pal="0">Neon</button>
+      <button class="vbtn" data-pal="1">Acid</button>
+      <button class="vbtn" data-pal="2">Fire</button>
+      <button class="vbtn" data-pal="3">Ice</button>
+    </div>
+  </div>
+
+  <div class="ctrl-group" style="min-width:180px;">
+    <div class="ctrl-label">FX</div>
+    <div class="ctrl-row">
+      <button class="vbtn" id="strobe-btn">Strobe</button>
+      <button class="vbtn" id="invert-btn">Invert</button>
+      <button class="vbtn" id="mirror-btn">Mirror</button>
+    </div>
+  </div>
+
+  <div class="ctrl-group">
+    <div class="ctrl-label">Controls</div>
+    <div class="ctrl-row">
+      <div class="slider-wrap">
+        <input type="range" class="viz-slider" id="sens" min="1" max="10" value="5">
+        <span>Sensitivity</span>
+      </div>
+      <div class="slider-wrap">
+        <input type="range" class="viz-slider" id="spd" min="1" max="10" value="5">
+        <span>Speed</span>
+      </div>
+    </div>
+  </div>
+
+</div>
+
+<script>
+// ============================================
+// RAVE.EXE — Visualiser Engine
+// ============================================
+
+const canvas = document.getElementById('c');
+const ctx = canvas.getContext('2d');
+const wrap = document.getElementById('canvas-wrap');
+
+let W, H;
+function resize() {
+  W = canvas.width = wrap.clientWidth;
+  H = canvas.height = wrap.clientHeight;
+}
+resize();
+window.addEventListener('resize', resize);
+
+// Fullscreen
+document.getElementById('fs-btn').addEventListener('click', () => {
+  if (!document.fullscreenElement) {
+    document.documentElement.requestFullscreen();
+    document.getElementById('fs-btn').textContent = '✕ EXIT FULL';
+  } else {
+    document.exitFullscreen();
+    document.getElementById('fs-btn').textContent = '⛶ FULLSCREEN';
+  }
+});
+
+// Palettes
+const PALETTES = [
+  ['#ff006e','#8338ec','#00f5d4','#ffbe0b','#fb5607'],
+  ['#00ff41','#ff00ff','#ffff00','#00ffff','#ff4400'],
+  ['#ff3300','#ff6600','#ff9900','#ffcc00','#ff0066'],
+  ['#00cfff','#7b2fff','#00fff7','#ffffff','#a0f0ff'],
+];
+let palette = PALETTES[0];
+let scene = 0;
+let strobeOn = false, invertOn = false, mirrorOn = false;
+let sensitivity = 5, speed = 5;
+
+// Audio
+let audioCtx, analyser, dataArray, bufferLen;
+let isRunning = false;
+
+function initAudio(src, isStream) {
+  if (audioCtx) { try { audioCtx.close(); } catch(e){} }
+  audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+  analyser = audioCtx.createAnalyser();
+  analyser.fftSize = 2048;
+  analyser.smoothingTimeConstant = 0.82;
+  bufferLen = analyser.frequencyBinCount;
+  dataArray = new Uint8Array(bufferLen);
+
+  if (isStream) {
+    const s = audioCtx.createMediaStreamSource(src);
+    s.connect(analyser);
+  } else {
+    audioCtx.decodeAudioData(src, buf => {
+      const s = audioCtx.createBufferSource();
+      s.buffer = buf;
+      s.loop = true;
+      s.connect(analyser);
+      analyser.connect(audioCtx.destination);
+      s.start();
+    });
+  }
+
+  isRunning = true;
+  document.getElementById('drop-overlay').classList.add('hidden');
+  document.getElementById('status-dot').classList.add('live');
+  document.getElementById('mic-btn').classList.remove('active');
+  if (isStream) document.getElementById('mic-btn').classList.add('active');
+}
+
+document.getElementById('file-input').addEventListener('change', e => {
+  const f = e.target.files[0];
+  if (!f) return;
+  const r = new FileReader();
+  r.onload = ev => initAudio(ev.target.result, false);
+  r.readAsArrayBuffer(f);
+  e.target.value = '';
+});
+
+document.getElementById('mic-btn').addEventListener('click', () => {
+  navigator.mediaDevices.getUserMedia({ audio: true, video: false })
+    .then(stream => initAudio(stream, true))
+    .catch(err => {
+      alert('Mic access denied. Check browser permissions.');
+    });
+});
+
+// Scene buttons
+document.querySelectorAll('[data-scene]').forEach(btn => {
+  btn.addEventListener('click', () => {
+    scene = +btn.dataset.scene;
+    document.querySelectorAll('[data-scene]').forEach(b => b.classList.remove('active'));
+    btn.classList.add('active');
+    initParticles();
+  });
+});
+
+// Palette buttons
+document.querySelectorAll('[data-pal]').forEach(btn => {
+  btn.addEventListener('click', () => {
+    palette = PALETTES[+btn.dataset.pal];
+    document.querySelectorAll('[data-pal]').forEach(b => b.classList.remove('active'));
+    btn.classList.add('active');
+  });
+});
+
+// FX buttons
+document.getElementById('strobe-btn').addEventListener('click', () => {
+  strobeOn = !strobeOn;
+  document.getElementById('strobe-btn').classList.toggle('active-red', strobeOn);
+});
+document.getElementById('invert-btn').addEventListener('click', () => {
+  invertOn = !invertOn;
+  document.getElementById('invert-btn').classList.toggle('active', invertOn);
+});
+document.getElementById('mirror-btn').addEventListener('click', () => {
+  mirrorOn = !mirrorOn;
+  document.getElementById('mirror-btn').classList.toggle('active-teal', mirrorOn);
+});
+
+document.getElementById('sens').addEventListener('input', e => sensitivity = +e.target.value);
+document.getElementById('spd').addEventListener('input', e => speed = +e.target.value);
+
+// BPM detection
+let bpmHistory = [], lastBeat = 0, beatEnergy = 0, prevEnergy = 0;
+function detectBeat(bass) {
+  const now = performance.now();
+  if (bass > 0.58 && prevEnergy < 0.48 && now - lastBeat > 240) {
+    if (lastBeat > 0) {
+      const interval = now - lastBeat;
+      const bpm = 60000 / interval;
+      if (bpm > 55 && bpm < 210) {
+        bpmHistory.push(bpm);
+        if (bpmHistory.length > 10) bpmHistory.shift();
+        const avg = bpmHistory.reduce((a,b)=>a+b,0)/bpmHistory.length;
+        document.getElementById('bpm').textContent = Math.round(avg);
+      }
+    }
+    lastBeat = now;
+    beatEnergy = 1.0;
+  }
+  prevEnergy = bass;
+  beatEnergy *= 0.88;
+}
+
+function getFreqBand(start, end) {
+  if (!dataArray) return 0;
+  let sum = 0;
+  for (let i = start; i < end && i < bufferLen; i++) sum += dataArray[i];
+  return sum / ((end - start) * 255);
+}
+
+// Particles
+let particles = [];
+function initParticles() {
+  particles = Array.from({ length: 220 }, () => ({
+    x: Math.random() * W, y: Math.random() * H,
+    vx: (Math.random()-0.5)*2, vy: (Math.random()-0.5)*2,
+    r: Math.random()*3+1, hue: Math.random()*360
+  }));
+}
+initParticles();
+
+// ---- SCENES ----
+
+function drawPlasma(bass, mid, high, beat) {
+  ctx.fillStyle = `rgba(6,6,10,${0.15 + beat * 0.05})`;
+  ctx.fillRect(0, 0, W, H);
+  const s = sensitivity * 0.18, sp = speed * 0.25;
+  for (let y = 0; y < H; y += 5) {
+    for (let x = 0; x < W; x += 5) {
+      const nx = x/W, ny = y/H;
+      const v = Math.sin(nx*10+t*sp)
+              + Math.sin(ny*8+t*sp*0.7)
+              + Math.sin((nx+ny)*6+t*sp*0.5)
+              + Math.sin(Math.sqrt((nx-.5)**2+(ny-.5)**2)*12+t*sp)
+              + bass*s*5;
+      const norm = (v+4)/8;
+      const ci = Math.abs(Math.floor(norm*palette.length))%palette.length;
+      ctx.fillStyle = palette[ci];
+      ctx.globalAlpha = 0.25 + bass*s*0.8 + beat*0.35;
+      ctx.fillRect(x, y, 5, 5);
+    }
+  }
+  ctx.globalAlpha = 1;
+}
+
+function drawLasers(bass, mid, high, beat) {
+  ctx.fillStyle = `rgba(6,6,10,${0.12 + beat*0.04})`;
+  ctx.fillRect(0, 0, W, H);
+  const cx=W/2, cy=H/2;
+  const count = 8 + Math.floor(high * sensitivity * 2.5);
+  const sp = speed * 0.4;
+  for (let i = 0; i < count; i++) {
+    const angle = (i/count)*Math.PI*2 + t*sp*0.25 + bass*1.8;
+    const len = W * 0.75 * (0.5 + bass*sensitivity*0.08);
+    const c = palette[i%palette.length];
+    ctx.save();
+    ctx.strokeStyle = c;
+    ctx.shadowColor = c;
+    ctx.shadowBlur = 18 + beat*32;
+    ctx.lineWidth = 1 + beat*2.5;
+    ctx.globalAlpha = 0.35 + mid*0.6 + beat*0.45;
+    ctx.beginPath();
+    ctx.moveTo(cx, cy);
+    ctx.lineTo(cx + Math.cos(angle)*len, cy + Math.sin(angle)*len);
+    ctx.stroke();
+    // Second arm (opposite)
+    ctx.globalAlpha *= 0.5;
+    ctx.beginPath();
+    ctx.moveTo(cx, cy);
+    ctx.lineTo(cx - Math.cos(angle)*len*0.6, cy - Math.sin(angle)*len*0.6);
+    ctx.stroke();
+    ctx.restore();
+  }
+  // Center burst
+  const grd = ctx.createRadialGradient(cx,cy,0,cx,cy,50+beat*60);
+  grd.addColorStop(0, palette[Math.floor(t)%palette.length]+'bb');
+  grd.addColorStop(1,'transparent');
+  ctx.fillStyle = grd;
+  ctx.beginPath();
+  ctx.arc(cx,cy,50+beat*60,0,Math.PI*2);
+  ctx.fill();
+}
+
+let tunnelZ = 0;
+function drawTunnel(bass, mid, high, beat) {
+  ctx.fillStyle = `rgba(6,6,10,${0.2+beat*0.08})`;
+  ctx.fillRect(0, 0, W, H);
+  tunnelZ += speed*0.6 + bass*sensitivity*2.5;
+  const cx=W/2, cy=H/2, rings=22, sides=6;
+  for (let i = rings; i >= 0; i--) {
+    const z = ((tunnelZ + i*28) % 560) / 560;
+    const r = z * Math.min(W,H) * 0.85;
+    const ci = Math.abs(Math.floor(i+t))%palette.length;
+    ctx.save();
+    ctx.strokeStyle = palette[ci];
+    ctx.shadowColor = palette[ci];
+    ctx.shadowBlur = 8 + bass*18;
+    ctx.lineWidth = 1.5 + beat*2.5;
+    ctx.globalAlpha = z * (0.5 + beat*0.5);
+    ctx.beginPath();
+    for (let s=0; s<=sides; s++) {
+      const ang=(s/sides)*Math.PI*2+t*0.4;
+      const px=cx+Math.cos(ang)*r, py=cy+Math.sin(ang)*r;
+      s===0?ctx.moveTo(px,py):ctx.lineTo(px,py);
+    }
+    ctx.closePath();
+    ctx.stroke();
+    ctx.restore();
+  }
+}
+
+function drawParticles(bass, mid, high, beat) {
+  ctx.fillStyle = `rgba(6,6,10,${0.16+beat*0.04})`;
+  ctx.fillRect(0, 0, W, H);
+  const sp = speed*0.5, force = bass*sensitivity*3.5;
+  particles.forEach((p,idx) => {
+    p.x += p.vx*sp + (Math.random()-.5)*force;
+    p.y += p.vy*sp + (Math.random()-.5)*force;
+    p.hue += high*4;
+    if (p.x<0) p.x=W; if (p.x>W) p.x=0;
+    if (p.y<0) p.y=H; if (p.y>H) p.y=0;
+    const r = p.r*(1+bass*sensitivity*0.5+beat*2.2);
+    const c = palette[idx%palette.length];
+    ctx.save();
+    ctx.shadowColor=c; ctx.shadowBlur=10+beat*18;
+    ctx.fillStyle=c; ctx.globalAlpha=0.7+beat*0.3;
+    ctx.beginPath(); ctx.arc(p.x,p.y,r,0,Math.PI*2); ctx.fill();
+    ctx.restore();
+    for (let j=idx+1; j<Math.min(idx+6,particles.length); j++) {
+      const q=particles[j], dx=p.x-q.x, dy=p.y-q.y;
+      const dist=Math.sqrt(dx*dx+dy*dy);
+      if (dist < 90+bass*55) {
+        ctx.save();
+        ctx.strokeStyle=c;
+        ctx.globalAlpha=(1-dist/145)*0.4*(0.4+bass);
+        ctx.lineWidth=0.5;
+        ctx.beginPath(); ctx.moveTo(p.x,p.y); ctx.lineTo(q.x,q.y); ctx.stroke();
+        ctx.restore();
+      }
+    }
+  });
+}
+
+function drawBars(bass, mid, high, beat) {
+  ctx.fillStyle=`rgba(6,6,10,${0.3+beat*0.1})`;
+  ctx.fillRect(0,0,W,H);
+  if (!dataArray) return;
+  const bars=96, bw=W/bars;
+  for (let i=0; i<bars; i++) {
+    const v=(dataArray[Math.floor(i*bufferLen/bars)]||0)/255;
+    const h=v*H*(sensitivity*0.22)*(1+beat*0.8);
+    const c=palette[Math.floor(i/bars*palette.length)];
+    ctx.save();
+    ctx.shadowColor=c; ctx.shadowBlur=14+beat*22;
+    ctx.fillStyle=c; ctx.globalAlpha=0.95;
+    ctx.fillRect(i*bw, H-h, bw-1, h);
+    // Reflection
+    ctx.globalAlpha=0.18;
+    ctx.transform(1,0,0,-0.3,0,H+(H*0.3));
+    ctx.fillRect(i*bw, H-h, bw-1, h);
+    ctx.restore();
+  }
+}
+
+const SCENES = [drawPlasma, drawLasers, drawTunnel, drawParticles, drawBars];
+
+// Main loop
+let t = 0;
+let lastStrobe = 0, strobeState = false;
+
+function render(ts) {
+  requestAnimationFrame(render);
+  t += 0.01 * speed;
+
+  let bass=0, mid=0, high=0, beat=0;
+  if (analyser && dataArray) {
+    analyser.getByteFrequencyData(dataArray);
+    bass = getFreqBand(0,10);
+    mid  = getFreqBand(10,100);
+    high = getFreqBand(100,300);
+    detectBeat(bass);
+    beat = beatEnergy;
+  } else {
+    // Demo animation
+    bass = 0.3+Math.sin(t*2)*0.28;
+    mid  = 0.38+Math.cos(t*1.5)*0.28;
+    high = 0.18+Math.sin(t*3.2)*0.18;
+    beat = Math.max(0,Math.sin(t*4.2)*0.55);
+  }
+
+  // Strobe
+  if (strobeOn) {
+    const si = Math.max(30, 100-speed*8);
+    if (ts - lastStrobe > si) { strobeState=!strobeState; lastStrobe=ts; }
+    if (strobeState) {
+      ctx.fillStyle='#ffffff'; ctx.fillRect(0,0,W,H); return;
+    }
+  }
+
+  ctx.save();
+  SCENES[scene](bass, mid, high, beat);
+  ctx.restore();
+
+  // Mirror FX (post-process)
+  if (mirrorOn) {
+    try {
+      const half = ctx.getImageData(0, 0, Math.floor(W/2), H);
+      ctx.save();
+      ctx.translate(W, 0); ctx.scale(-1,1);
+      ctx.putImageData(half, 0, 0);
+      ctx.restore();
+    } catch(e) {}
+  }
+
+  // Invert FX
+  if (invertOn) {
+    ctx.save();
+    ctx.globalCompositeOperation='difference';
+    ctx.fillStyle='#ffffff';
+    ctx.fillRect(0,0,W,H);
+    ctx.restore();
+  }
+}
+
+requestAnimationFrame(render);
+</script>
+</body>
+</html>
